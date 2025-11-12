@@ -6,7 +6,9 @@ import { add_dependency, createToolsWithContext, hello_world } from "./tools/too
 import { Sandbox } from "@e2b/code-interpreter";
 import { createAgent } from "langchain";
 
+const app = express();
 
+app.use(express.json());
 
 const llm = new ChatAnthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || "",
@@ -14,6 +16,12 @@ const llm = new ChatAnthropic({
 });
 
 
+
+const port = 3000;
+
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
+});
 
 
 const sbx = await Sandbox.create();
