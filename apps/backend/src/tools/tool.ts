@@ -1,0 +1,354 @@
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+import { Sandbox } from "@e2b/code-interpreter";
+
+const APP_ROOT = "/home/user/react-app";
+
+async function sendToWs(socket: any, data: unknown): Promise<boolean> {
+  if (!socket || !socket.send) return false;
+  try {
+    if (typeof (socket as any).sendJSON === "function")
+      (socket as any).sendJSON(data);
+    else {
+      socket.send(JSON.stringify(data));
+    }
+    return true;
+  } catch (e) {
+    console.error(e);
+    return false;
+  }
+}
+
+export function createToolsWithContext(params: {
+  sandbox: Sandbox;
+  socket: any;
+  projectId: string;
+}) {
+  const { sandbox, socket, projectId } = params;
+  return [
+    add_dependency(sandbox, socket, projectId),
+    create_file(sandbox, socket, projectId),
+    read_file(sandbox, socket, projectId),
+    delete_file(sandbox, socket, projectId),
+    execute_command(sandbox, socket, projectId),
+    rename_file(sandbox, socket, projectId),
+    list_directories(sandbox, socket, projectId),
+    get_context(sandbox, socket, projectId),
+    save_context(sandbox, socket, projectId),
+    test_build(sandbox, socket, projectId),
+    write_mutiple_files(sandbox, socket, projectId),
+    check_missing_dependencies(sandbox, socket, projectId),
+    hello_world(sandbox, socket, projectId),
+  ];
+}
+
+export const add_dependency = (
+  sandbox: Sandbox,
+  socket: any,
+  projectId: string
+) =>
+  tool(
+    async (input: unknown) => {
+      const a = z.string().parse(input);
+      return a;
+    },
+    {
+      name: "add-dependency",
+      description:
+        "Use this tool to add a dependency to the project. The dependency should be a valid npm package name.",
+      schema: z.object({
+        pkg: z
+          .string()
+          .describe("The npm package to install, e.g. lodash@latest"),
+      }),
+    }
+  );
+
+export const create_file = (sandbox: Sandbox, socket: any, projectId: string) =>
+  tool(
+    async (input) => {
+      const { filepath, content } = z
+        .object({ filepath: z.string(), content: z.string() })
+        .parse(input);
+
+      const fullPath = `${APP_ROOT}/${filepath.replace(/^\/+/, "")}`;
+
+      let fixed = content;
+      try {
+        const execution = await sandbox.runCode(
+          `echo "${content}" > ${fullPath} && cat ${fullPath}`
+        );
+        console.log(execution.logs);
+      } catch (e) {
+        console.error(e);
+      }
+      return `File created successfully at ${fullPath}`;
+    },
+    {
+      name: "write",
+      description:
+        "Create a file with the given content at the specified path.",
+      schema: z.object({
+        filepath: z
+          .string()
+          .describe("The file path to write to, e.g. src/index.js"),
+        content: z
+          .string()
+          .describe(
+            "The content to write to the file, e.g. console.log('Hello, world!')"
+          ),
+      }),
+    }
+  );
+
+export const read_file = (sandbox: Sandbox, socket: any, projectId: string) =>
+  tool(
+    async (input) => {
+      const { filePath } = z.object({ filePath: z.string() }).parse(input);
+      const fullPath = `${APP_ROOT}/${filePath.replace(/^\/+/, "")}`;
+      try {
+        const execution = await sandbox.runCode(`cat ${fullPath}`);
+        console.log("Read file:", execution.logs);
+        return execution.logs;
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    {
+      name: "read",
+      description:
+        "Read a file beneath /home/user/react-app and return its contents.",
+      schema: z.object({
+        filePath: z
+          .string()
+          .describe(`Path like "src/App.tsx" or "package.json"`),
+      }),
+    }
+  );
+
+export const delete_file = (sandbox: Sandbox, socket: any, projectId: string) =>
+  tool(
+    async (input) => {
+      const { filePath } = z.object({ filePath: z.string() }).parse(input);
+      const fullPath = `${APP_ROOT}/${filePath.replace(/^\/+/, "")}`;
+      try {
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    {
+      name: "delete-file",
+      description: "Delete a file beneath /home/user/react-app.",
+      schema: z.object({
+        filePath: z.string().describe(`Path like "src/old-component.tsx"`),
+      }),
+    }
+  );
+
+export const execute_command = (
+  sandbox: Sandbox,
+  socket: any,
+  projectId: string
+) =>
+  tool(
+    async (input) => {
+      const { command } = z.object({ command: z.string().min(1) }).parse(input);
+      try {
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    {
+      name: "execute-command",
+      description:
+        "Execute a shell command in /home/user/react-app (e.g., npm install, npm run build). Returns stdout/stderr",
+      schema: z.object({
+        command: z.string().describe("The shell command to run"),
+      }),
+    }
+  );
+
+export const rename_file = (sandbox: Sandbox, socket: any, projectId: string) =>
+  tool(
+    async (input) => {
+      const { oldPath, newPath } = z
+        .object({ oldPath: z.string(), newPath: z.string() })
+        .parse(input);
+      const fullPath = `${APP_ROOT}/${oldPath.replace(/^\/+/, "")}`;
+      try {
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    {
+      name: "rename-file",
+      description: "Rename a file beneath /home/user/react-app.",
+      schema: z.object({
+        oldPath: z.string().describe("The old path of the file"),
+        newPath: z.string().describe("The new path of the file"),
+      }),
+    }
+  );
+
+export const list_directories = (
+  sandbox: Sandbox,
+  socket: any,
+  projectId: string
+) =>
+  tool(
+    async (input) => {
+      const { path } = z.object({ path: z.string().default(".") }).parse(input);
+      const cmd = `tree -I 'node_modules|.*' ${path}`;
+
+      try {
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    {
+      name: "list-directories",
+      description:
+        "List a directory (tree) under /home/user/react-app, excluding node_modules, dist, target files or hidden files.",
+      schema: z.object({
+        path: z.string().default(".").describe('Relative path like ".", "src"'),
+      }),
+    }
+  );
+
+export const get_context = (sandbox: Sandbox, socket: any, projectId: string) =>
+  tool(
+    async () => {
+      if (!projectId) return "no project id is available";
+      try {
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    {
+      name: "like-get_context",
+      description:
+        "Fetch the last saved context (semantic/procedural/episodic + files created + recent conversation).",
+      schema: z.object({}),
+    }
+  );
+
+export const save_context = (
+  sandbox: Sandbox,
+  socket: any,
+  projectId: string
+) =>
+  tool(
+    async (input) => {
+      const { semantic, procedural, episodic } = z
+        .object({
+          semantic: z.string().default(""),
+          procedural: z.string().default(""),
+          episodic: z.string().default(""),
+        })
+        .parse(input);
+
+      if (!projectId) return "no project id is available";
+
+      try {
+      } catch (e) {}
+    },
+    {
+      name: "save_context",
+      description:
+        "Save project context (what it is, how it works, what has been done) for continuity across sessions.",
+      schema: z.object({
+        semantic: z.string().describe("What the project is about").default(""),
+        procedural: z.string().describe("How the project works").default(""),
+        episodic: z.string().describe("What has been done so far").default(""),
+      }),
+    }
+  );
+
+export const test_build = (sandbox: Sandbox, socket: any, projectId: string) =>
+  tool(
+    async () => {
+      const path = APP_ROOT;
+      try {
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    {
+      name: "test-build",
+      description:
+        "Run npm install (if needed) and npm run build in /home/user/react-app to validate the app compiles.",
+      schema: z.object({}),
+    }
+  );
+
+export const write_mutiple_files = (
+  sandbox: Sandbox,
+  socket: any,
+  projectId: string
+) =>
+  tool(
+    async (input) => {
+      const { files } = z
+        .object({
+          files: z
+            .array(
+              z.object({
+                path: z.string(),
+                data: z.string(),
+              })
+            )
+            .min(1),
+        })
+        .parse(input);
+
+      try {
+      } catch (e) {}
+    },
+    {
+      name: "write-multiple-files",
+      description:
+        "Create many files in one shot under /home/user/react-app for efficiency.",
+      schema: z.object({
+        files: z
+          .array(
+            z.object({
+              path: z.string().describe("Relative, path (e.g., src/App.jsx)"),
+              data: z.string().describe("File contents"),
+            })
+          )
+          .min(1),
+      }),
+    }
+  );
+
+export const check_missing_dependencies = (
+  sandbox: Sandbox,
+  socket: any,
+  projectId: string
+) =>
+  tool(
+    async () => {
+      try {
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    {
+      name: "check-missing-dependencies",
+      description:
+        "Scan source imports vs package.json and suggest npm install commands for missing dependencies.",
+      schema: z.object({}),
+    }
+  );
+
+export const hello_world = (sandbox: Sandbox, socket: any, projectId: string) =>
+  tool(
+    async () => {
+      return "Hello, world!";
+    },
+    {
+      name: "hello-world",
+      description: "Say hello to the world.",
+      schema: z.object({}),
+    }
+  );
