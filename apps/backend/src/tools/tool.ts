@@ -3,6 +3,8 @@ import { z } from "zod";
 import { Sandbox } from "@e2b/code-interpreter";
 import { sendToWs } from "../services/websocket.service.js";
 import { WebSocket } from "ws";
+import { prisma } from "../config/prisma-client.js";
+import { ContextType } from "@prisma/client";
 
 const APP_ROOT = "/home/user/react-app";
 
@@ -32,7 +34,7 @@ export function createToolsWithContext(params: {
 export const add_dependency = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async (input) => {
@@ -52,15 +54,37 @@ export const add_dependency = (
 
       try {
         const command = `npm install ${pkg}`;
-        const execution = await sandbox.runCode(`!${command}`, {
-          language: "bash",
-        });
+        const execution = await sandbox.runCode(`
+      import subprocess
+      import sys
+      
+      result = subprocess.run(
+          ${JSON.stringify(command)},
+          shell=True,
+          cwd=${JSON.stringify(APP_ROOT)},
+          capture_output=True,
+          text=True
+      )
+      
+      print("STDOUT:", result.stdout)
+      if result.stderr:
+          print("STDERR:", result.stderr, file=sys.stderr)
+      print("EXIT_CODE:", result.returncode)
+      sys.exit(result.returncode)
+      `);
 
-        await sendToWs(socket, {
-          e: "dependency_installation_completed",
-          message: `Installed dependency: ${pkg}`,
-          dependency: pkg,
-        });
+        const exitCode = execution.error ? 1 : 0;
+
+        if (exitCode === 0) {
+          await sendToWs(socket, {
+            e: "dependency_installation_completed",
+            message: `Installed dependency: ${pkg}`,
+            dependency: pkg,
+          });
+          return `Successfully installed ${pkg}`;
+        } else {
+          throw new Error(`Installation failed with exit code ${exitCode}`);
+        }
       } catch (e) {
         console.error(e);
         await sendToWs(socket, {
@@ -86,7 +110,7 @@ export const add_dependency = (
 export const create_file = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async (input) => {
@@ -103,23 +127,22 @@ export const create_file = (
       });
 
       try {
-        let fixedContent = content;
-
-        try {
-          fixedContent = content
-            .replace(/\\n/g, "\n")
-            .replace(/\\t/g, "\t")
-            .replace(/\\r/g, "\r");
-        } catch {}
+        const fixedContent = content;
 
         const writeCommand = `
-        import os
-        os.makedirs(os.path.dirname("${fullPath}"), exist_ok=True)
-        with open("${fullPath}", "w", encoding="utf-8") as f:
-            f.write(r"""${fixedContent}""")
-        `;
+import os
+import base64
 
-        const execution = await sandbox.runCode(writeCommand);
+content_b64 = ${JSON.stringify(Buffer.from(fixedContent, "utf-8").toString("base64"))}
+content = base64.b64decode(content_b64).decode('utf-8')
+
+os.makedirs(os.path.dirname(${JSON.stringify(fullPath)}), exist_ok=True)
+with open(${JSON.stringify(fullPath)}, "w", encoding="utf-8") as f:
+    f.write(content)
+print("File created successfully")
+`;
+
+        await sandbox.runCode(writeCommand);
 
         await sendToWs(socket, {
           e: "file_created",
@@ -155,7 +178,7 @@ export const create_file = (
 export const read_file = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async (input) => {
@@ -170,13 +193,16 @@ export const read_file = (
 
       try {
         const readCommand = `
-        with open("${fullPath}", "r", encoding="utf-8") as f:
+        with open(${JSON.stringify(fullPath)}, "r", encoding="utf-8") as f:
             print(f.read())
         `;
 
         const execution = await sandbox.runCode(readCommand);
-        const content =
-          execution.logs?.stdout.join("\n") || execution.logs || "";
+        const content = Array.isArray(execution.logs?.stdout)
+          ? execution.logs.stdout.join("\n")
+          : (execution.logs?.stdout as string[])?.join("\n") ||
+            execution.logs?.toString() ||
+            "";
 
         await sendToWs(socket, {
           e: "file_read",
@@ -209,7 +235,7 @@ export const read_file = (
 export const delete_file = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async (input) => {
@@ -224,14 +250,16 @@ export const delete_file = (
       try {
         const deleteCommand = `
 import os
-if os.path.exists("${fullPath}"):
-    os.remove("${fullPath}")
-    print(f"File {${filePath}} deleted successfully")
+file_path = ${JSON.stringify(fullPath)}
+file_name = ${JSON.stringify(filePath)}
+if os.path.exists(file_path):
+    os.remove(file_path)
+    print(f"File deleted successfully: {file_name}")
 else:
-    print(f"File {${filePath}} does not exist")
+    print(f"File does not exist: {file_name}")
 `;
 
-        const execution = await sandbox.runCode(deleteCommand);
+        await sandbox.runCode(deleteCommand);
 
         await sendToWs(socket, {
           e: "file_deleted",
@@ -262,7 +290,7 @@ else:
 export const execute_command = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async (input) => {
@@ -275,22 +303,23 @@ export const execute_command = (
 
       try {
         const execCommand = `
-        import subprocess
-        import sys
-        
-        result = subprocess.run(
-            "${command}",
-            shell=True,
-            cwd="${APP_ROOT}",
-            capture_output=True,
-            text=True
-        )
-        
-        print("STDOUT:", result.stdout)
-        print("STDERR:", result.stderr, file=sys.stderr)
-        print("EXIT_CODE:", result.returncode)
-        sys.exit(result.returncode)
-        `;
+import subprocess
+import sys
+
+command = ${JSON.stringify(command)}
+result = subprocess.run(
+    command,
+    shell=True,
+    cwd=${JSON.stringify(APP_ROOT)},
+    capture_output=True,
+    text=True
+)
+
+print("STDOUT:", result.stdout)
+print("STDERR:", result.stderr, file=sys.stderr)
+print("EXIT_CODE:", result.returncode)
+sys.exit(result.returncode)
+`;
 
         const execution = await sandbox.runCode(execCommand);
 
@@ -344,7 +373,7 @@ export const execute_command = (
 export const rename_file = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async (input) => {
@@ -365,15 +394,19 @@ export const rename_file = (
       try {
         const renameCommand = `
         import os
-        os.makedirs(os.path.dirname("${newFullPath}"), exist_ok=True)
-        if os.path.exists("${oldFullPath}"):
-            os.rename("${oldFullPath}", "${newFullPath}")
-            print(f"File renamed from {${oldPath}} to {${newPath}}")
+        
+        old_path = ${JSON.stringify(oldFullPath)}
+        new_path = ${JSON.stringify(newFullPath)}
+        
+        os.makedirs(os.path.dirname(new_path), exist_ok=True)
+        if os.path.exists(old_path):
+            os.rename(old_path, new_path)
+            print(f"File renamed from ${JSON.stringify(oldPath)} to ${JSON.stringify(newPath)}")
         else:
-            print(f"File {${oldPath}} does not exist")
+            print(f"File ${JSON.stringify(oldPath)} does not exist")
         `;
 
-        const execution = await sandbox.runCode(renameCommand);
+        await sandbox.runCode(renameCommand);
 
         await sendToWs(socket, {
           e: "file_renamed",
@@ -407,7 +440,7 @@ export const rename_file = (
 export const list_directories = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async (input) => {
@@ -421,12 +454,14 @@ export const list_directories = (
       try {
         const treeCommand = `
         import subprocess
+        import sys
         import os
         
+        cmd = ${JSON.stringify(cmd)}
         result = subprocess.run(
-            "${cmd}",
+            cmd,
             shell=True,
-            cwd="${APP_ROOT}",
+            cwd=${JSON.stringify(APP_ROOT)},
             capture_output=True,
             text=True
         )
@@ -436,8 +471,9 @@ export const list_directories = (
             print(result.stderr, file=sys.stderr)
         `;
         const execution = await sandbox.runCode(treeCommand);
-        const output =
-          execution.logs?.stdout.join("\n") || execution.logs || "";
+        const output = Array.isArray(execution.logs?.stdout)
+          ? execution.logs.stdout.join("\n")
+          : ((execution.logs?.stdout as string[]) || []).join("\n");
 
         await sendToWs(socket, {
           e: "command_output",
@@ -483,6 +519,9 @@ export const get_context = (
     async () => {
       if (!projectId) return "no project id is available";
       try {
+        await prisma.projectContext.findMany({
+          where: { projectId: projectId },
+        });
         await sendToWs(socket, {
           e: "context_loaded",
           message: "Context retrieved",
@@ -519,6 +558,13 @@ export const save_context = (
       if (!projectId) return "no project id is available";
 
       try {
+        await prisma.projectContext.create({
+          data: {
+            projectId: projectId,
+            type: ContextType.SEMANTIC,
+            content: semantic,
+          },
+        });
         await sendToWs(socket, {
           e: "context_saved",
           message: "Context saved successfully",
@@ -545,7 +591,7 @@ export const save_context = (
 export const test_build = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async () => {
@@ -556,30 +602,27 @@ export const test_build = (
       });
       try {
         const cleanCommand = `cd ${path} && rm -rf node_modules/.vite-temp && npm install`;
-        const cleanExecution = await sandbox.runCode(`
+        await sandbox.runCode(`
 import subprocess
-subprocess.run("${cleanCommand}", shell=True, cwd="${path}")
+subprocess.run(${JSON.stringify(cleanCommand)}, shell=True, cwd=${JSON.stringify(path)})
 `);
         const buildCommand = `npm run build`;
-        const buildExecution = await sandbox.runCode(
-          `
-import subprocess
-result = subprocess.run(
-    "${buildCommand}",
-    shell=True,
-    cwd="${path}",
-    capture_output=True,
-    text=True
-)
-print(result.stdout)
-if result.stderr:
-    print(result.stderr, file=sys.stderr)
-print("EXIT_CODE:", result.returncode)
-`,
-          {
-            language: "python",
-          }
-        );
+        const buildExecution = await sandbox.runCode(`
+          import subprocess
+          import sys
+          
+          result = subprocess.run(
+              ${JSON.stringify(buildCommand)},
+              shell=True,
+              cwd=${JSON.stringify(path)},
+              capture_output=True,
+              text=True
+          )
+          print(result.stdout)
+          if result.stderr:
+              print(result.stderr, file=sys.stderr)
+          print("EXIT_CODE:", result.returncode)
+          `);
 
         const exitCode = buildExecution.error ? 1 : 0;
         const output = buildExecution.logs?.stdout?.join("\n") || "";
@@ -619,7 +662,7 @@ print("EXIT_CODE:", result.returncode)
 export const write_mutiple_files = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async (input) => {
@@ -667,7 +710,7 @@ export const write_mutiple_files = (
         
         print(f"Successfully created {len(files_to_create)} files")
         `;
-        const execution = await sandbox.runCode(writeCommand);
+        await sandbox.runCode(writeCommand);
 
         const fileNames = files.map((f) => f.path);
         await sendToWs(socket, {
@@ -677,7 +720,14 @@ export const write_mutiple_files = (
         });
 
         return `Successfully created ${fileNames.length} files: ${fileNames.join(", ")}`;
-      } catch (e) {}
+      } catch (e) {
+        console.error(e);
+        await sendToWs(socket, {
+          e: "file_error",
+          message: `Failed to create multiple files: ${e}`,
+        });
+        return `Failed to create multiple files: ${e}`;
+      }
     },
     {
       name: "write-multiple-files",
@@ -699,7 +749,7 @@ export const write_mutiple_files = (
 export const check_missing_dependencies = (
   sandbox: Sandbox,
   socket: WebSocket | null,
-  projectId: string
+  _projectId: string
 ) =>
   tool(
     async () => {
@@ -709,19 +759,19 @@ export const check_missing_dependencies = (
           message: "Checking for missing dependencies...",
         });
         const packageJsonPath = `${APP_ROOT}/package.json`;
-        const readPackageJson = await sandbox.runCode(`
-with open("${packageJsonPath}", "r", encoding="utf-8") as f:
+        await sandbox.runCode(`
+with open(${JSON.stringify(packageJsonPath)}, "r", encoding="utf-8") as f:
     import json
     package_data = json.load(f)
     print(json.dumps(package_data))
 `);
 
-        const findFiles = await sandbox.runCode(`
+        await sandbox.runCode(`
   import os
   import subprocess
   
   result = subprocess.run(
-      "find ${APP_ROOT}/src -name '*.jsx' -o -name '*.js' -o -name '*.tsx' -o -name '*.ts'",
+      ${JSON.stringify(`find ${APP_ROOT}/src -name '*.jsx' -o -name '*.js' -o -name '*.tsx' -o -name '*.ts'`)},
       shell=True,
       capture_output=True,
       text=True
@@ -754,9 +804,9 @@ with open("${packageJsonPath}", "r", encoding="utf-8") as f:
   );
 
 export const hello_world = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  projectId: string
+  _sandbox: Sandbox,
+  _socket: WebSocket | null,
+  _projectId: string
 ) =>
   tool(
     async () => {
