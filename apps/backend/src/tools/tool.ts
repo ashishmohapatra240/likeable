@@ -414,9 +414,54 @@ export const list_directories = (
       const { path } = z.object({ path: z.string().default(".") }).parse(input);
       const cmd = `tree -I 'node_modules|.*' ${path}`;
 
+      await sendToWs(socket, {
+        e: "command_started",
+        command: cmd,
+      });
       try {
+        const treeCommand = `
+        import subprocess
+        import os
+        
+        result = subprocess.run(
+            "${cmd}",
+            shell=True,
+            cwd="${APP_ROOT}",
+            capture_output=True,
+            text=True
+        )
+        
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        `;
+        const execution = await sandbox.runCode(treeCommand);
+        const output =
+          execution.logs?.stdout.join("\n") || execution.logs || "";
+
+        await sendToWs(socket, {
+          e: "command_output",
+          command: cmd,
+          stdout: (output as string).split("\n") || [],
+          stderr: [],
+          exit_code: 0,
+        });
+
+        await sendToWs(socket, {
+          e: "command_executed",
+          command: cmd,
+          message: "Directory structure listed successfully",
+        });
+
+        return `Directory structure:\n${output}`;
       } catch (e) {
         console.error(e);
+        await sendToWs(socket, {
+          e: "command_error",
+          command: cmd,
+          message: `Command execution error: ${e}`,
+        });
+        return `Failed to list directory structure: ${e}`;
       }
     },
     {
