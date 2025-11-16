@@ -1,27 +1,14 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { Sandbox } from "@e2b/code-interpreter";
+import { sendToWs } from "../services/websocket.service.js";
+import { WebSocket } from "ws";
 
 const APP_ROOT = "/home/user/react-app";
 
-async function sendToWs(socket: any, data: unknown): Promise<boolean> {
-  if (!socket || !socket.send) return false;
-  try {
-    if (typeof (socket as any).sendJSON === "function")
-      (socket as any).sendJSON(data);
-    else {
-      socket.send(JSON.stringify(data));
-    }
-    return true;
-  } catch (e) {
-    console.error(e);
-    return false;
-  }
-}
-
 export function createToolsWithContext(params: {
   sandbox: Sandbox;
-  socket: any;
+  socket: WebSocket | null;
   projectId: string;
 }) {
   const { sandbox, socket, projectId } = params;
