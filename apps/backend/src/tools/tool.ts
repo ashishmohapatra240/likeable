@@ -27,7 +27,6 @@ export function createToolsWithContext(params: {
     test_build(sandbox, socket, projectId),
     write_mutiple_files(sandbox, socket, projectId),
     check_missing_dependencies(sandbox, socket, projectId),
-    hello_world(sandbox, socket, projectId),
   ];
 }
 
@@ -803,18 +802,3 @@ with open(${JSON.stringify(packageJsonPath)}, "r", encoding="utf-8") as f:
     }
   );
 
-export const hello_world = (
-  _sandbox: Sandbox,
-  _socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
-    async () => {
-      return "Hello, world!";
-    },
-    {
-      name: "hello-world",
-      description: "Say hello to the world.",
-      schema: z.object({}),
-    }
-  );
