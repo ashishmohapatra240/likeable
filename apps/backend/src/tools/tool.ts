@@ -35,9 +35,41 @@ export const add_dependency = (
   projectId: string
 ) =>
   tool(
-    async (input: unknown) => {
-      const a = z.string().parse(input);
-      return a;
+    async (input) => {
+      const { pkg } = z
+        .object({
+          pkg: z
+            .string()
+            .describe("The npm package to install, e.g. react-icons"),
+        })
+        .parse(input);
+
+      await sendToWs(socket, {
+        e: "dependency_installation_started",
+        message: `Installing dependency: ${pkg}`,
+        dependency: pkg,
+      });
+
+      try {
+        const command = `npm install ${pkg}`;
+        const execution = await sandbox.runCode(`!${command}`, {
+          language: "bash",
+        });
+
+        await sendToWs(socket, {
+          e: "dependency_installation_completed",
+          message: `Installed dependency: ${pkg}`,
+          dependency: pkg,
+        });
+      } catch (e) {
+        console.error(e);
+        await sendToWs(socket, {
+          e: "dependency_error",
+          message: `Failed to install dependency: ${pkg}`,
+          dependency: pkg,
+        });
+        return `Failed to install dependency: ${pkg}`;
+      }
     },
     {
       name: "add-dependency",
@@ -46,7 +78,7 @@ export const add_dependency = (
       schema: z.object({
         pkg: z
           .string()
-          .describe("The npm package to install, e.g. lodash@latest"),
+          .describe("The npm package to install, e.g. react-icons"),
       }),
     }
   );
