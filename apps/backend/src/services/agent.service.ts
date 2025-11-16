@@ -47,6 +47,8 @@ export async function handleAgentRequest({
       { version: "v2" }
     );
 
+    let finalResponse = "";
+
     for await (const event of stream) {
       if (event.event === "on_tool_start") {
         await sendToWs(socket, {
@@ -76,7 +78,27 @@ export async function handleAgentRequest({
           e: "agent_completed",
           message: "Agent completed processing",
         });
+      } else if (event.event === "on_llm_end") {
+        const content = event.data?.output?.content || "";
+        if (typeof content === "string") {
+          finalResponse = content;
+        } else if (Array.isArray(content)) {
+          finalResponse = content
+            .map((c: any) => (typeof c === "string" ? c : c.text || ""))
+            .join("");
+        }
+        await sendToWs(socket, {
+          e: "agent_response",
+          message: finalResponse,
+        });
       }
+    }
+
+    if (finalResponse) {
+      await sendToWs(socket, {
+        e: "agent_final_response",
+        message: finalResponse,
+      });
     }
   } catch (error) {
     console.error("Agent error:", error);
@@ -84,5 +106,15 @@ export async function handleAgentRequest({
       e: "agent_error",
       message: (error as any).message,
     });
+    return;
+  } finally {
+    try {
+      const sandboxAny = sandbox as any;
+      if (typeof sandboxAny.close === "function") {
+        await sandboxAny.close();
+      }
+    } catch (closeError) {
+      console.error("Error closing sandbox:", closeError);
+    }
   }
 }
