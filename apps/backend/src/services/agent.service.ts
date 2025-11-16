@@ -16,7 +16,7 @@ export async function handleAgentRequest({
   prompt,
   socket,
 }: AgentRequest) {
-  const sandbox = await Sandbox.create();
+  const sandbox = await Sandbox.create("react-base");
 
   try {
     const llm = new ChatAnthropic({
