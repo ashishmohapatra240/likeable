@@ -22,12 +22,14 @@
     "jsonwebtoken": "^9.0.2",
     "langchain": "^1.0.4",
     "prisma": "^6.19.0",
+    "ws": "^8.18.3",
     "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
     "@types/express": "^5.0.5",
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^24.10.0"
+    "@types/node": "^24.10.0",
+    "@types/ws": "^8.18.1"
   }
 }
