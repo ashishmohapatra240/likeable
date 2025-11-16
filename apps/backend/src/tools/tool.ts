@@ -152,7 +152,7 @@ export const create_file = (
     }
   );
 
-export const read_file = (sandbox: Sandbox, socket: any, projectId: string) =>
+export const read_file = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
   tool(
     async (input) => {
       const { filePath } = z.object({ filePath: z.string() }).parse(input);
@@ -202,7 +202,7 @@ export const read_file = (sandbox: Sandbox, socket: any, projectId: string) =>
     }
   );
 
-export const delete_file = (sandbox: Sandbox, socket: any, projectId: string) =>
+export const delete_file = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
   tool(
     async (input) => {
       const { filePath } = z.object({ filePath: z.string() }).parse(input);
@@ -253,15 +253,74 @@ else:
 
 export const execute_command = (
   sandbox: Sandbox,
-  socket: any,
+  socket: WebSocket | null,
   projectId: string
 ) =>
   tool(
     async (input) => {
       const { command } = z.object({ command: z.string().min(1) }).parse(input);
+
+      await sendToWs(socket, {
+        e: "command_started",
+        command: command,
+      });
+
       try {
+        const execCommand = `
+        import subprocess
+        import sys
+        
+        result = subprocess.run(
+            "${command}",
+            shell=True,
+            cwd="${APP_ROOT}",
+            capture_output=True,
+            text=True
+        )
+        
+        print("STDOUT:", result.stdout)
+        print("STDERR:", result.stderr, file=sys.stderr)
+        print("EXIT_CODE:", result.returncode)
+        sys.exit(result.returncode)
+        `;
+
+        const execution = await sandbox.runCode(execCommand);
+
+        const stdout = execution.logs?.stdout || [];
+        const stderr = execution.logs?.stderr || [];
+        const exitCode = execution.error ? 1 : 0;
+
+        await sendToWs(socket, {
+          e: "command_output",
+          command: command,
+          stdout: stdout,
+          stderr: stderr,
+          exit_code: exitCode,
+        });
+
+        if (exitCode === 0) {
+          await sendToWs(socket, {
+            e: "command_executed",
+            command: command,
+            message: "Command executed successfully",
+          });
+          return `Command '${command}' executed successfully. Output: ${stdout.join("\n").slice(0, 500)}${stdout.join("\n").length > 500 ? "..." : ""}`;
+        } else {
+          await sendToWs(socket, {
+            e: "command_failed",
+            command: command,
+            message: `Command failed with exit code ${exitCode}`,
+          });
+          return `Command '${command}' failed with exit code ${exitCode}. Error: ${stderr.join("\n").slice(0, 500)}${stderr.join("\n").length > 500 ? "..." : ""}`;
+        }
       } catch (e) {
         console.error(e);
+        await sendToWs(socket, {
+          e: "command_error",
+          command: command,
+          message: `Command execution error: ${e}`,
+        });
+        return `Command '${command}' failed with error: ${e}`;
       }
     },
     {
@@ -274,7 +333,7 @@ export const execute_command = (
     }
   );
 
-export const rename_file = (sandbox: Sandbox, socket: any, projectId: string) =>
+export const rename_file = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
   tool(
     async (input) => {
       const { oldPath, newPath } = z
@@ -298,7 +357,7 @@ export const rename_file = (sandbox: Sandbox, socket: any, projectId: string) =>
 
 export const list_directories = (
   sandbox: Sandbox,
-  socket: any,
+  socket: WebSocket | null,
   projectId: string
 ) =>
   tool(
@@ -321,7 +380,7 @@ export const list_directories = (
     }
   );
 
-export const get_context = (sandbox: Sandbox, socket: any, projectId: string) =>
+export const get_context = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
   tool(
     async () => {
       if (!projectId) return "no project id is available";
@@ -340,7 +399,7 @@ export const get_context = (sandbox: Sandbox, socket: any, projectId: string) =>
 
 export const save_context = (
   sandbox: Sandbox,
-  socket: any,
+  socket: WebSocket | null,
   projectId: string
 ) =>
   tool(
@@ -370,7 +429,7 @@ export const save_context = (
     }
   );
 
-export const test_build = (sandbox: Sandbox, socket: any, projectId: string) =>
+export const test_build = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
   tool(
     async () => {
       const path = APP_ROOT;
@@ -389,7 +448,7 @@ export const test_build = (sandbox: Sandbox, socket: any, projectId: string) =>
 
 export const write_mutiple_files = (
   sandbox: Sandbox,
-  socket: any,
+  socket: WebSocket | null,
   projectId: string
 ) =>
   tool(
@@ -429,7 +488,7 @@ export const write_mutiple_files = (
 
 export const check_missing_dependencies = (
   sandbox: Sandbox,
-  socket: any,
+  socket: WebSocket | null,
   projectId: string
 ) =>
   tool(
@@ -447,7 +506,7 @@ export const check_missing_dependencies = (
     }
   );
 
-export const hello_world = (sandbox: Sandbox, socket: any, projectId: string) =>
+export const hello_world = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
   tool(
     async () => {
       return "Hello, world!";
