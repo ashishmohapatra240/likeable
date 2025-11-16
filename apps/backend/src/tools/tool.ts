@@ -207,9 +207,39 @@ export const delete_file = (sandbox: Sandbox, socket: any, projectId: string) =>
     async (input) => {
       const { filePath } = z.object({ filePath: z.string() }).parse(input);
       const fullPath = `${APP_ROOT}/${filePath.replace(/^\/+/, "")}`;
+
+      await sendToWs(socket, {
+        e: "file_deletion_started",
+        message: `Deleting file: ${filePath}`,
+        filepath: filePath,
+      });
       try {
+        const deleteCommand = `
+import os
+if os.path.exists("${fullPath}"):
+    os.remove("${fullPath}")
+    print(f"File {${filePath}} deleted successfully")
+else:
+    print(f"File {${filePath}} does not exist")
+`;
+
+        const execution = await sandbox.runCode(deleteCommand);
+
+        await sendToWs(socket, {
+          e: "file_deleted",
+          message: `Deleted ${filePath}`,
+          filepath: filePath,
+        });
+
+        return `File ${filePath} deleted successfully.`;
       } catch (e) {
         console.error(e);
+        await sendToWs(socket, {
+          e: "file_error",
+          message: `Failed to delete ${filePath}: ${e}`,
+          filepath: filePath,
+        });
+        return `Failed to delete file ${filePath}: ${e}`;
       }
     },
     {
