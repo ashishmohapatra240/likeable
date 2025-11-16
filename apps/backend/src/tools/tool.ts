@@ -152,7 +152,11 @@ export const create_file = (
     }
   );
 
-export const read_file = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
+export const read_file = (
+  sandbox: Sandbox,
+  socket: WebSocket | null,
+  projectId: string
+) =>
   tool(
     async (input) => {
       const { filePath } = z.object({ filePath: z.string() }).parse(input);
@@ -202,7 +206,11 @@ export const read_file = (sandbox: Sandbox, socket: WebSocket | null, projectId:
     }
   );
 
-export const delete_file = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
+export const delete_file = (
+  sandbox: Sandbox,
+  socket: WebSocket | null,
+  projectId: string
+) =>
   tool(
     async (input) => {
       const { filePath } = z.object({ filePath: z.string() }).parse(input);
@@ -333,16 +341,57 @@ export const execute_command = (
     }
   );
 
-export const rename_file = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
+export const rename_file = (
+  sandbox: Sandbox,
+  socket: WebSocket | null,
+  projectId: string
+) =>
   tool(
     async (input) => {
       const { oldPath, newPath } = z
         .object({ oldPath: z.string(), newPath: z.string() })
         .parse(input);
-      const fullPath = `${APP_ROOT}/${oldPath.replace(/^\/+/, "")}`;
+
+      const oldFullPath = `${APP_ROOT}/${oldPath.replace(/^\/+/, "")}`;
+      const newFullPath = `${APP_ROOT}/${newPath.replace(/^\/+/, "")}`;
+
+      await sendToWs(socket, {
+        e: "file_rename_started",
+        message: `Renaming ${oldPath} to ${newPath}`,
+        oldPath: oldPath,
+        newPath: newPath,
+      });
+
       try {
+        const renameCommand = `
+        import os
+        os.makedirs(os.path.dirname("${newFullPath}"), exist_ok=True)
+        if os.path.exists("${oldFullPath}"):
+            os.rename("${oldFullPath}", "${newFullPath}")
+            print(f"File renamed from {${oldPath}} to {${newPath}}")
+        else:
+            print(f"File {${oldPath}} does not exist")
+        `;
+
+        const execution = await sandbox.runCode(renameCommand);
+
+        await sendToWs(socket, {
+          e: "file_renamed",
+          message: `Renamed ${oldPath} to ${newPath}`,
+          oldPath: oldPath,
+          newPath: newPath,
+        });
+
+        return `File renamed from ${oldPath} to ${newPath}`;
       } catch (e) {
         console.error(e);
+        await sendToWs(socket, {
+          e: "file_error",
+          message: `Failed to rename ${oldPath} to ${newPath}: ${e}`,
+          oldPath: oldPath,
+          newPath: newPath,
+        });
+        return `Failed to rename file: ${e}`;
       }
     },
     {
@@ -380,7 +429,11 @@ export const list_directories = (
     }
   );
 
-export const get_context = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
+export const get_context = (
+  sandbox: Sandbox,
+  socket: WebSocket | null,
+  projectId: string
+) =>
   tool(
     async () => {
       if (!projectId) return "no project id is available";
@@ -429,7 +482,11 @@ export const save_context = (
     }
   );
 
-export const test_build = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
+export const test_build = (
+  sandbox: Sandbox,
+  socket: WebSocket | null,
+  projectId: string
+) =>
   tool(
     async () => {
       const path = APP_ROOT;
@@ -506,7 +563,11 @@ export const check_missing_dependencies = (
     }
   );
 
-export const hello_world = (sandbox: Sandbox, socket: WebSocket | null, projectId: string) =>
+export const hello_world = (
+  sandbox: Sandbox,
+  socket: WebSocket | null,
+  projectId: string
+) =>
   tool(
     async () => {
       return "Hello, world!";
