@@ -102,18 +102,32 @@ export const create_file = (
         filepath: filepath,
       });
 
-      let fixed = content;
       try {
-        const execution = await sandbox.runCode(
-          `echo "${content}" > ${fullPath} && cat ${fullPath}`
-        );
-        console.log(execution.logs);
+        let fixedContent = content;
+
+        try {
+          fixedContent = content
+            .replace(/\\n/g, "\n")
+            .replace(/\\t/g, "\t")
+            .replace(/\\r/g, "\r");
+        } catch {}
+
+        const writeCommand = `
+        import os
+        os.makedirs(os.path.dirname("${fullPath}"), exist_ok=True)
+        with open("${fullPath}", "w", encoding="utf-8") as f:
+            f.write(r"""${fixedContent}""")
+        `;
+
+        const execution = await sandbox.runCode(writeCommand);
 
         await sendToWs(socket, {
           e: "file_created",
           message: `Created ${filepath}`,
           filepath: filepath,
         });
+
+        return `File ${filepath} created successfully.`;
       } catch (e) {
         console.error(e);
 
@@ -143,12 +157,37 @@ export const read_file = (sandbox: Sandbox, socket: any, projectId: string) =>
     async (input) => {
       const { filePath } = z.object({ filePath: z.string() }).parse(input);
       const fullPath = `${APP_ROOT}/${filePath.replace(/^\/+/, "")}`;
+
+      await sendToWs(socket, {
+        e: "file_read_started",
+        message: `Reading file: ${filePath}`,
+        filepath: filePath,
+      });
+
       try {
-        const execution = await sandbox.runCode(`cat ${fullPath}`);
-        console.log("Read file:", execution.logs);
-        return execution.logs;
+        const readCommand = `
+        with open("${fullPath}", "r", encoding="utf-8") as f:
+            print(f.read())
+        `;
+
+        const execution = await sandbox.runCode(readCommand);
+        const content =
+          execution.logs?.stdout.join("\n") || execution.logs || "";
+
+        await sendToWs(socket, {
+          e: "file_read",
+          message: `Read content from ${filePath}`,
+          filepath: filePath,
+        });
+        return `Content from ${filePath}:\n${content}`;
       } catch (e) {
         console.error(e);
+        await sendToWs(socket, {
+          e: "file_error",
+          message: `Failed to read ${filePath}: ${e}`,
+          filepath: filePath,
+        });
+        return `Failed to read file ${filePath}: ${e}`;
       }
     },
     {
