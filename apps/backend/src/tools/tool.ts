@@ -31,7 +31,7 @@ export function createToolsWithContext(params: {
 
 export const add_dependency = (
   sandbox: Sandbox,
-  socket: any,
+  socket: WebSocket | null,
   projectId: string
 ) =>
   tool(
@@ -51,7 +51,11 @@ export const add_dependency = (
     }
   );
 
-export const create_file = (sandbox: Sandbox, socket: any, projectId: string) =>
+export const create_file = (
+  sandbox: Sandbox,
+  socket: WebSocket | null,
+  projectId: string
+) =>
   tool(
     async (input) => {
       const { filepath, content } = z
@@ -60,16 +64,34 @@ export const create_file = (sandbox: Sandbox, socket: any, projectId: string) =>
 
       const fullPath = `${APP_ROOT}/${filepath.replace(/^\/+/, "")}`;
 
+      await sendToWs(socket, {
+        e: "file_creation_started",
+        message: `Creating file: ${filepath}`,
+        filepath: filepath,
+      });
+
       let fixed = content;
       try {
         const execution = await sandbox.runCode(
           `echo "${content}" > ${fullPath} && cat ${fullPath}`
         );
         console.log(execution.logs);
+
+        await sendToWs(socket, {
+          e: "file_created",
+          message: `Created ${filepath}`,
+          filepath: filepath,
+        });
       } catch (e) {
         console.error(e);
+
+        await sendToWs(socket, {
+          e: "file_error",
+          message: `Failed to create ${filepath}: ${e}`,
+          filepath: filepath,
+        });
+        return `Failed to create file: ${e}`;
       }
-      return `File created successfully at ${fullPath}`;
     },
     {
       name: "write",
@@ -79,11 +101,7 @@ export const create_file = (sandbox: Sandbox, socket: any, projectId: string) =>
         filepath: z
           .string()
           .describe("The file path to write to, e.g. src/index.js"),
-        content: z
-          .string()
-          .describe(
-            "The content to write to the file, e.g. console.log('Hello, world!')"
-          ),
+        content: z.string().describe("The content to write to the file"),
       }),
     }
   );
