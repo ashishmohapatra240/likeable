@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
+import { handleAgentRequest } from "./agent.service.js";
 
 export function setupWebSocket(server: Server) {
   const wss = new WebSocketServer({ server });
@@ -22,11 +23,16 @@ export function setupWebSocket(server: Server) {
       try {
         const data = JSON.parse(message.toString());
 
-        if (data.type == "start_agent") {
+        if (data.type === "start_agent") {
+          await handleAgentRequest({
+            projectId,
+            prompt: data.prompt,
+            socket: ws,
+          });
         }
       } catch (error) {
         console.error(error);
-        sendToWs(ws, {
+        await sendToWs(ws, {
           e: "error",
           message: (error as any).message,
         });
