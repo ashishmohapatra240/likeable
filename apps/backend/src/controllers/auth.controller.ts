@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
-import { registerUserSchema, loginUserSchema } from "../types/user.types.js";
-import { prisma } from "../config/prisma-client.js";
+import { registerUserSchema, loginUserSchema } from "../types/user.type.js";
+import { prisma } from "../lib/prisma.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
@@ -57,7 +57,7 @@ export const login = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid credentials" });
     }
     const token = generateToken(user.id);
-    return res.cookie("token", token, {
+    res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       maxAge: 3600000,

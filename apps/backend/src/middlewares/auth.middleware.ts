@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { prisma } from "../config/prisma-client.js";
+import { prisma } from "../lib/prisma.js";
 
 declare global {
   namespace Express {
@@ -21,14 +21,14 @@ export const authenticate = async (
     return;
   }
   const decoded = jwt.verify(token, process.env.JWT_SECRET || "") as {
-    userId: string;
+    id: string;
   };
   if (!decoded) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
 
-  const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+  const user = await prisma.user.findUnique({ where: { id: decoded.id } });
 
   if (!user) {
     res.status(401).json({ error: "Unauthorized" });
