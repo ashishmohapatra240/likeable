@@ -3,7 +3,6 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import { Sandbox } from "@e2b/code-interpreter";
 import { prisma } from "../lib/prisma.js";
-import { ContextType } from "../generated/prisma/client.js";
 // import { ExaSearchResults } from "@langchain/exa";
 import { Exa } from "exa-js";
 import { createSandbox } from "../services/sandbox.service.js";
@@ -31,8 +30,6 @@ export async function getTools({
     createExecuteCommandTool(sandbox),
     createRenameFileTool(sandbox, projectId),
     createListDirectoriesTool(sandbox),
-    createGetContextTool(projectId),
-    createSaveContextTool(projectId),
     createTestBuildTool(sandbox),
     createWriteMultipleFilesTool(sandbox, projectId),
     createStartDevServerTool(sandbox),
@@ -235,73 +232,6 @@ function createListDirectoriesTool(sandbox: Sandbox) {
           .string()
           .default(".")
           .describe('Relative path like "." or "src"'),
-      }),
-    }
-  );
-}
-
-function createGetContextTool(projectId: string) {
-  return tool(
-    async () => {
-      if (!projectId) return "No project ID available";
-
-      const context = await prisma.projectContext.findUnique({
-        where: { projectId },
-      });
-
-      if (!context) {
-        return "No saved context found for this project.";
-      }
-
-      let parsedContent: Record<string, string>;
-      try {
-        parsedContent = JSON.parse(context.content);
-      } catch {
-        return context.content;
-      }
-
-      const sections = [
-        parsedContent.semantic
-          ? `**Semantic Context:**\n${parsedContent.semantic}`
-          : "",
-        parsedContent.procedural
-          ? `**Procedural Notes:**\n${parsedContent.procedural}`
-          : "",
-        parsedContent.episodic
-          ? `**Episodic Memory:**\n${parsedContent.episodic}`
-          : "",
-      ].filter(Boolean);
-
-      return sections.length
-        ? sections.join("\n\n")
-        : "Context stored but empty.";
-    },
-    {
-      name: "get_context",
-      description:
-        "Fetch saved project context (what it is, how it works, what has been done)",
-      schema: z.object({}),
-    }
-  );
-}
-
-function createSaveContextTool(projectId: string) {
-  return tool(
-    async ({ content }) => {
-      if (!projectId) return "No project ID available";
-      await prisma.projectContext.upsert({
-        where: { projectId },
-        create: { projectId, type: ContextType.SEMANTIC, content },
-        update: { content, type: ContextType.SEMANTIC },
-      });
-
-      return `Context saved successfully for project ${projectId}.`;
-    },
-    {
-      name: "save_context",
-      description: "Save project context for continuity across sessions",
-      schema: z.object({
-        content: z.string().describe("The context to save"),
       }),
     }
   );
