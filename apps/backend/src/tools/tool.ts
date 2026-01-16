@@ -1,103 +1,60 @@
 import { tool } from "@langchain/core/tools";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import { Sandbox } from "@e2b/code-interpreter";
-import { sendToWs } from "../services/websocket.service.js";
-import { WebSocket } from "ws";
-import { prisma } from "../config/prisma-client.js";
-import { ContextType } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
+import { ContextType } from "../generated/prisma/client.js";
+// import { ExaSearchResults } from "@langchain/exa";
+import { Exa } from "exa-js";
+import { createSandbox } from "../services/sandbox.service.js";
 
 const APP_ROOT = "/home/user/react-app";
 
-export function createToolsWithContext(params: {
-  sandbox: Sandbox;
-  socket: WebSocket | null;
-  projectId: string;
-}) {
-  const { sandbox, socket, projectId } = params;
-  return [
-    add_dependency(sandbox, socket, projectId),
-    create_file(sandbox, socket, projectId),
-    read_file(sandbox, socket, projectId),
-    delete_file(sandbox, socket, projectId),
-    execute_command(sandbox, socket, projectId),
-    rename_file(sandbox, socket, projectId),
-    list_directories(sandbox, socket, projectId),
-    get_context(sandbox, socket, projectId),
-    save_context(sandbox, socket, projectId),
-    test_build(sandbox, socket, projectId),
-    write_mutiple_files(sandbox, socket, projectId),
-    check_missing_dependencies(sandbox, socket, projectId),
-  ];
+const exaClient = new Exa(process.env.EXASEARCH_API_KEY || "");
+
+export async function getSandbox(projectId: string): Promise<Sandbox> {
+  return await createSandbox(projectId);
 }
 
-export const add_dependency = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
-    async (input) => {
-      const { pkg } = z
-        .object({
-          pkg: z
-            .string()
-            .describe("The npm package to install, e.g. react-icons"),
-        })
-        .parse(input);
+export async function getTools({
+  projectId,
+}: {
+  projectId: string;
+}): Promise<StructuredToolInterface[]> {
+  const sandbox = await getSandbox(projectId);
 
-      await sendToWs(socket, {
-        e: "dependency_installation_started",
-        message: `Installing dependency: ${pkg}`,
-        dependency: pkg,
-      });
+  const tools: StructuredToolInterface[] = [
+    createAddDependencyTool(sandbox),
+    createWriteFileTool(sandbox, projectId),
+    createReadFileTool(sandbox),
+    createDeleteFileTool(sandbox, projectId),
+    createExecuteCommandTool(sandbox),
+    createRenameFileTool(sandbox, projectId),
+    createListDirectoriesTool(sandbox),
+    createGetContextTool(projectId),
+    createSaveContextTool(projectId),
+    createTestBuildTool(sandbox),
+    createWriteMultipleFilesTool(sandbox, projectId),
+    createStartDevServerTool(sandbox),
+    createSearchTool(),
+  ];
 
+  return tools;
+}
+
+function createAddDependencyTool(sandbox: Sandbox) {
+  return tool(
+    async ({ pkg }) => {
       try {
-        const command = `npm install ${pkg}`;
-        const execution = await sandbox.runCode(`
-      import subprocess
-      import sys
-      
-      result = subprocess.run(
-          ${JSON.stringify(command)},
-          shell=True,
-          cwd=${JSON.stringify(APP_ROOT)},
-          capture_output=True,
-          text=True
-      )
-      
-      print("STDOUT:", result.stdout)
-      if result.stderr:
-          print("STDERR:", result.stderr, file=sys.stderr)
-      print("EXIT_CODE:", result.returncode)
-      sys.exit(result.returncode)
-      `);
-
-        const exitCode = execution.error ? 1 : 0;
-
-        if (exitCode === 0) {
-          await sendToWs(socket, {
-            e: "dependency_installation_completed",
-            message: `Installed dependency: ${pkg}`,
-            dependency: pkg,
-          });
-          return `Successfully installed ${pkg}`;
-        } else {
-          throw new Error(`Installation failed with exit code ${exitCode}`);
-        }
+        await sandbox.commands.run(`npm install ${pkg}`);
+        return `Successfully installed ${pkg}`;
       } catch (e) {
-        console.error(e);
-        await sendToWs(socket, {
-          e: "dependency_error",
-          message: `Failed to install dependency: ${pkg}`,
-          dependency: pkg,
-        });
-        return `Failed to install dependency: ${pkg}`;
+        return `Failed to install dependency ${pkg}: ${e}`;
       }
     },
     {
-      name: "add-dependency",
-      description:
-        "Use this tool to add a dependency to the project. The dependency should be a valid npm package name.",
+      name: "add_dependency",
+      description: "Install an npm package dependency",
       schema: z.object({
         pkg: z
           .string()
@@ -105,700 +62,425 @@ export const add_dependency = (
       }),
     }
   );
+}
 
-export const create_file = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
-    async (input) => {
-      const { filepath, content } = z
-        .object({ filepath: z.string(), content: z.string() })
-        .parse(input);
-
+function createWriteFileTool(sandbox: Sandbox, projectId: string) {
+  return tool(
+    async ({ filepath, content }) => {
       const fullPath = `${APP_ROOT}/${filepath.replace(/^\/+/, "")}`;
 
-      await sendToWs(socket, {
-        e: "file_creation_started",
-        message: `Creating file: ${filepath}`,
-        filepath: filepath,
-      });
-
       try {
-        const fixedContent = content;
+        await sandbox.files.write(fullPath, content);
 
-        const writeCommand = `
-import os
-import base64
-
-content_b64 = ${JSON.stringify(Buffer.from(fixedContent, "utf-8").toString("base64"))}
-content = base64.b64decode(content_b64).decode('utf-8')
-
-os.makedirs(os.path.dirname(${JSON.stringify(fullPath)}), exist_ok=True)
-with open(${JSON.stringify(fullPath)}, "w", encoding="utf-8") as f:
-    f.write(content)
-print("File created successfully")
-`;
-
-        await sandbox.runCode(writeCommand);
-
-        await sendToWs(socket, {
-          e: "file_created",
-          message: `Created ${filepath}`,
-          filepath: filepath,
+        await prisma.projectFile.upsert({
+          where: { projectId_path: { projectId, path: filepath } },
+          create: {
+            projectId,
+            path: filepath,
+            content,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          update: {
+            content,
+            updatedAt: new Date(),
+          },
         });
 
         return `File ${filepath} created successfully.`;
       } catch (e) {
-        console.error(e);
-
-        await sendToWs(socket, {
-          e: "file_error",
-          message: `Failed to create ${filepath}: ${e}`,
-          filepath: filepath,
-        });
-        return `Failed to create file: ${e}`;
+        return `Failed to create file ${filepath}: ${e}`;
       }
     },
     {
-      name: "write",
-      description:
-        "Create a file with the given content at the specified path.",
+      name: "write_file",
+      description: "Create or overwrite a file with the given content",
       schema: z.object({
-        filepath: z
-          .string()
-          .describe("The file path to write to, e.g. src/index.js"),
+        filepath: z.string().describe("The file path, e.g. src/App.tsx"),
         content: z.string().describe("The content to write to the file"),
       }),
     }
   );
+}
 
-export const read_file = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
-    async (input) => {
-      const { filePath } = z.object({ filePath: z.string() }).parse(input);
-      const fullPath = `${APP_ROOT}/${filePath.replace(/^\/+/, "")}`;
-
-      await sendToWs(socket, {
-        e: "file_read_started",
-        message: `Reading file: ${filePath}`,
-        filepath: filePath,
-      });
+function createReadFileTool(sandbox: Sandbox) {
+  return tool(
+    async ({ filepath }) => {
+      const fullPath = `${APP_ROOT}/${filepath.replace(/^\/+/, "")}`;
 
       try {
-        const readCommand = `
-        with open(${JSON.stringify(fullPath)}, "r", encoding="utf-8") as f:
-            print(f.read())
-        `;
+        const content = await sandbox.files.read(fullPath);
 
-        const execution = await sandbox.runCode(readCommand);
-        const content = Array.isArray(execution.logs?.stdout)
-          ? execution.logs.stdout.join("\n")
-          : (execution.logs?.stdout as string[])?.join("\n") ||
-            execution.logs?.toString() ||
-            "";
-
-        await sendToWs(socket, {
-          e: "file_read",
-          message: `Read content from ${filePath}`,
-          filepath: filePath,
-        });
-        return `Content from ${filePath}:\n${content}`;
+        return `Content of ${filepath}:\n${content}`;
       } catch (e) {
-        console.error(e);
-        await sendToWs(socket, {
-          e: "file_error",
-          message: `Failed to read ${filePath}: ${e}`,
-          filepath: filePath,
-        });
-        return `Failed to read file ${filePath}: ${e}`;
+        return `Failed to read file ${filepath}: ${e}`;
       }
     },
     {
-      name: "read",
-      description:
-        "Read a file beneath /home/user/react-app and return its contents.",
+      name: "read_file",
+      description: "Read a file and return its contents",
       schema: z.object({
-        filePath: z
-          .string()
-          .describe(`Path like "src/App.tsx" or "package.json"`),
+        filepath: z.string().describe("Path like src/App.tsx or package.json"),
       }),
     }
   );
+}
 
-export const delete_file = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
-    async (input) => {
-      const { filePath } = z.object({ filePath: z.string() }).parse(input);
-      const fullPath = `${APP_ROOT}/${filePath.replace(/^\/+/, "")}`;
+function createDeleteFileTool(sandbox: Sandbox, projectId: string) {
+  return tool(
+    async ({ filepath }) => {
+      const fullPath = `${APP_ROOT}/${filepath.replace(/^\/+/, "")}`;
 
-      await sendToWs(socket, {
-        e: "file_deletion_started",
-        message: `Deleting file: ${filePath}`,
-        filepath: filePath,
-      });
       try {
-        const deleteCommand = `
-import os
-file_path = ${JSON.stringify(fullPath)}
-file_name = ${JSON.stringify(filePath)}
-if os.path.exists(file_path):
-    os.remove(file_path)
-    print(f"File deleted successfully: {file_name}")
-else:
-    print(f"File does not exist: {file_name}")
-`;
-
-        await sandbox.runCode(deleteCommand);
-
-        await sendToWs(socket, {
-          e: "file_deleted",
-          message: `Deleted ${filePath}`,
-          filepath: filePath,
+        await sandbox.files.remove(fullPath);
+        await prisma.projectFile.delete({
+          where: { projectId_path: { projectId, path: filepath } },
         });
 
-        return `File ${filePath} deleted successfully.`;
+        return `File ${filepath} deleted successfully.`;
       } catch (e) {
-        console.error(e);
-        await sendToWs(socket, {
-          e: "file_error",
-          message: `Failed to delete ${filePath}: ${e}`,
-          filepath: filePath,
-        });
-        return `Failed to delete file ${filePath}: ${e}`;
+        return `Failed to delete file ${filepath}: ${e}`;
       }
     },
     {
-      name: "delete-file",
-      description: "Delete a file beneath /home/user/react-app.",
+      name: "delete_file",
+      description: "Delete a file",
       schema: z.object({
-        filePath: z.string().describe(`Path like "src/old-component.tsx"`),
+        filepath: z.string().describe("Path like src/old-component.tsx"),
       }),
     }
   );
+}
 
-export const execute_command = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
-    async (input) => {
-      const { command } = z.object({ command: z.string().min(1) }).parse(input);
+function createExecuteCommandTool(sandbox: Sandbox) {
+  return tool(
+    async ({ command }) => {
+      // Block app creation commands - the app already exists
+      const blockedPatterns = [
+        /npx\s+create-react-app/,
+        /npm\s+create\s+vite/,
+        /npm\s+create\s+.*app/,
+        /create-react-app/,
+        /create-vite/,
+      ];
 
-      await sendToWs(socket, {
-        e: "command_started",
-        command: command,
-      });
+      const isBlocked = blockedPatterns.some((pattern) =>
+        pattern.test(command)
+      );
+      if (isBlocked) {
+        return `ERROR: App creation commands are not allowed. The React app already exists at ${APP_ROOT}. Instead, use the 'write' or 'write-multiple-files' tools to create/modify files directly. For example, use 'write' to create src/components/YourComponent.tsx instead of creating a new app.`;
+      }
 
       try {
-        const execCommand = `
-import subprocess
-import sys
-
-command = ${JSON.stringify(command)}
-result = subprocess.run(
-    command,
-    shell=True,
-    cwd=${JSON.stringify(APP_ROOT)},
-    capture_output=True,
-    text=True
-)
-
-print("STDOUT:", result.stdout)
-print("STDERR:", result.stderr, file=sys.stderr)
-print("EXIT_CODE:", result.returncode)
-sys.exit(result.returncode)
-`;
-
-        const execution = await sandbox.runCode(execCommand);
-
-        const stdout = execution.logs?.stdout || [];
-        const stderr = execution.logs?.stderr || [];
-        const exitCode = execution.error ? 1 : 0;
-
-        await sendToWs(socket, {
-          e: "command_output",
-          command: command,
-          stdout: stdout,
-          stderr: stderr,
-          exit_code: exitCode,
-        });
-
-        if (exitCode === 0) {
-          await sendToWs(socket, {
-            e: "command_executed",
-            command: command,
-            message: "Command executed successfully",
-          });
-          return `Command '${command}' executed successfully. Output: ${stdout.join("\n").slice(0, 500)}${stdout.join("\n").length > 500 ? "..." : ""}`;
-        } else {
-          await sendToWs(socket, {
-            e: "command_failed",
-            command: command,
-            message: `Command failed with exit code ${exitCode}`,
-          });
-          return `Command '${command}' failed with exit code ${exitCode}. Error: ${stderr.join("\n").slice(0, 500)}${stderr.join("\n").length > 500 ? "..." : ""}`;
-        }
+        await sandbox.commands.run(`cd ${APP_ROOT} && ${command}`);
+        return `Command executed successfully.`;
       } catch (e) {
-        console.error(e);
-        await sendToWs(socket, {
-          e: "command_error",
-          command: command,
-          message: `Command execution error: ${e}`,
-        });
-        return `Command '${command}' failed with error: ${e}`;
+        return `Command failed: ${e}`;
       }
     },
     {
-      name: "execute-command",
+      name: "execute_command",
       description:
-        "Execute a shell command in /home/user/react-app (e.g., npm install, npm run build). Returns stdout/stderr",
+        "Execute a shell command in /home/user/react-app (e.g., npm install, npm run build). NOTE: Do NOT use this to create new React apps - the app already exists. Use 'write' tools instead.",
       schema: z.object({
         command: z.string().describe("The shell command to run"),
       }),
     }
   );
+}
 
-export const rename_file = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
-    async (input) => {
-      const { oldPath, newPath } = z
-        .object({ oldPath: z.string(), newPath: z.string() })
-        .parse(input);
-
+function createRenameFileTool(sandbox: Sandbox, projectId: string) {
+  return tool(
+    async ({ oldPath, newPath }) => {
       const oldFullPath = `${APP_ROOT}/${oldPath.replace(/^\/+/, "")}`;
       const newFullPath = `${APP_ROOT}/${newPath.replace(/^\/+/, "")}`;
 
-      await sendToWs(socket, {
-        e: "file_rename_started",
-        message: `Renaming ${oldPath} to ${newPath}`,
-        oldPath: oldPath,
-        newPath: newPath,
-      });
-
       try {
-        const renameCommand = `
-        import os
-        
-        old_path = ${JSON.stringify(oldFullPath)}
-        new_path = ${JSON.stringify(newFullPath)}
-        
-        os.makedirs(os.path.dirname(new_path), exist_ok=True)
-        if os.path.exists(old_path):
-            os.rename(old_path, new_path)
-            print(f"File renamed from ${JSON.stringify(oldPath)} to ${JSON.stringify(newPath)}")
-        else:
-            print(f"File ${JSON.stringify(oldPath)} does not exist")
-        `;
-
-        await sandbox.runCode(renameCommand);
-
-        await sendToWs(socket, {
-          e: "file_renamed",
-          message: `Renamed ${oldPath} to ${newPath}`,
-          oldPath: oldPath,
-          newPath: newPath,
+        await sandbox.files.rename(oldFullPath, newFullPath);
+        await prisma.projectFile.update({
+          where: { projectId_path: { projectId, path: oldPath } },
+          data: { path: newPath, updatedAt: new Date() },
         });
 
         return `File renamed from ${oldPath} to ${newPath}`;
       } catch (e) {
-        console.error(e);
-        await sendToWs(socket, {
-          e: "file_error",
-          message: `Failed to rename ${oldPath} to ${newPath}: ${e}`,
-          oldPath: oldPath,
-          newPath: newPath,
-        });
         return `Failed to rename file: ${e}`;
       }
     },
     {
-      name: "rename-file",
-      description: "Rename a file beneath /home/user/react-app.",
+      name: "rename_file",
+      description: "Rename or move a file",
       schema: z.object({
-        oldPath: z.string().describe("The old path of the file"),
+        oldPath: z.string().describe("The current path of the file"),
         newPath: z.string().describe("The new path of the file"),
       }),
     }
   );
+}
 
-export const list_directories = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
-    async (input) => {
-      const { path } = z.object({ path: z.string().default(".") }).parse(input);
+function createListDirectoriesTool(sandbox: Sandbox) {
+  return tool(
+    async ({ path }) => {
       const cmd = `tree -I 'node_modules|.*' ${path}`;
+      const tree = await sandbox.commands.run(cmd);
 
-      await sendToWs(socket, {
-        e: "command_started",
-        command: cmd,
-      });
-      try {
-        const treeCommand = `
-        import subprocess
-        import sys
-        import os
-        
-        cmd = ${JSON.stringify(cmd)}
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=${JSON.stringify(APP_ROOT)},
-            capture_output=True,
-            text=True
-        )
-        
-        print(result.stdout)
-        if result.stderr:
-            print(result.stderr, file=sys.stderr)
-        `;
-        const execution = await sandbox.runCode(treeCommand);
-        const output = Array.isArray(execution.logs?.stdout)
-          ? execution.logs.stdout.join("\n")
-          : ((execution.logs?.stdout as string[]) || []).join("\n");
-
-        await sendToWs(socket, {
-          e: "command_output",
-          command: cmd,
-          stdout: (output as string).split("\n") || [],
-          stderr: [],
-          exit_code: 0,
-        });
-
-        await sendToWs(socket, {
-          e: "command_executed",
-          command: cmd,
-          message: "Directory structure listed successfully",
-        });
-
-        return `Directory structure:\n${output}`;
-      } catch (e) {
-        console.error(e);
-        await sendToWs(socket, {
-          e: "command_error",
-          command: cmd,
-          message: `Command execution error: ${e}`,
-        });
-        return `Failed to list directory structure: ${e}`;
-      }
+      return `Directory structure:\n${tree}`;
     },
     {
-      name: "list-directories",
+      name: "list_directories",
       description:
-        "List a directory (tree) under /home/user/react-app, excluding node_modules, dist, target files or hidden files.",
+        "List directory structure (excludes node_modules and hidden files)",
       schema: z.object({
-        path: z.string().default(".").describe('Relative path like ".", "src"'),
+        path: z
+          .string()
+          .default(".")
+          .describe('Relative path like "." or "src"'),
       }),
     }
   );
+}
 
-export const get_context = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  projectId: string
-) =>
-  tool(
+function createGetContextTool(projectId: string) {
+  return tool(
     async () => {
-      if (!projectId) return "no project id is available";
-      try {
-        await prisma.projectContext.findMany({
-          where: { projectId: projectId },
-        });
-        await sendToWs(socket, {
-          e: "context_loaded",
-          message: "Context retrieved",
-        });
-        return "Get context - not implemented yet. Would return saved project context (semantic/procedural/episodic memory).";
-      } catch (e) {
-        console.error(e);
-        return `Failed to retrieve context: ${e}`;
+      if (!projectId) return "No project ID available";
+
+      const context = await prisma.projectContext.findUnique({
+        where: { projectId },
+      });
+
+      if (!context) {
+        return "No saved context found for this project.";
       }
+
+      let parsedContent: Record<string, string>;
+      try {
+        parsedContent = JSON.parse(context.content);
+      } catch {
+        return context.content;
+      }
+
+      const sections = [
+        parsedContent.semantic
+          ? `**Semantic Context:**\n${parsedContent.semantic}`
+          : "",
+        parsedContent.procedural
+          ? `**Procedural Notes:**\n${parsedContent.procedural}`
+          : "",
+        parsedContent.episodic
+          ? `**Episodic Memory:**\n${parsedContent.episodic}`
+          : "",
+      ].filter(Boolean);
+
+      return sections.length
+        ? sections.join("\n\n")
+        : "Context stored but empty.";
     },
     {
-      name: "like-get_context",
+      name: "get_context",
       description:
-        "Fetch the last saved context (semantic/procedural/episodic + files created + recent conversation).",
+        "Fetch saved project context (what it is, how it works, what has been done)",
       schema: z.object({}),
     }
   );
+}
 
-export const save_context = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  projectId: string
-) =>
-  tool(
-    async (input) => {
-      const { semantic, procedural, episodic } = z
-        .object({
-          semantic: z.string().default(""),
-          procedural: z.string().default(""),
-          episodic: z.string().default(""),
-        })
-        .parse(input);
+function createSaveContextTool(projectId: string) {
+  return tool(
+    async ({ content }) => {
+      if (!projectId) return "No project ID available";
+      await prisma.projectContext.upsert({
+        where: { projectId },
+        create: { projectId, type: ContextType.SEMANTIC, content },
+        update: { content, type: ContextType.SEMANTIC },
+      });
 
-      if (!projectId) return "no project id is available";
-
-      try {
-        await prisma.projectContext.create({
-          data: {
-            projectId: projectId,
-            type: ContextType.SEMANTIC,
-            content: semantic,
-          },
-        });
-        await sendToWs(socket, {
-          e: "context_saved",
-          message: "Context saved successfully",
-        });
-
-        return `Context saved successfully for project ${projectId}. This information will be available in future sessions.`;
-      } catch (e) {
-        console.error(e);
-        return `Failed to save context: ${e}`;
-      }
+      return `Context saved successfully for project ${projectId}.`;
     },
     {
       name: "save_context",
-      description:
-        "Save project context (what it is, how it works, what has been done) for continuity across sessions.",
+      description: "Save project context for continuity across sessions",
       schema: z.object({
-        semantic: z.string().describe("What the project is about").default(""),
-        procedural: z.string().describe("How the project works").default(""),
-        episodic: z.string().describe("What has been done so far").default(""),
+        content: z.string().describe("The context to save"),
       }),
     }
   );
+}
 
-export const test_build = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
+function createTestBuildTool(sandbox: Sandbox) {
+  return tool(
     async () => {
-      const path = APP_ROOT;
-      await sendToWs(socket, {
-        e: "build_started",
-        message: "Build started",
-      });
       try {
-        const cleanCommand = `cd ${path} && rm -rf node_modules/.vite-temp && npm install`;
-        await sandbox.runCode(`
-import subprocess
-subprocess.run(${JSON.stringify(cleanCommand)}, shell=True, cwd=${JSON.stringify(path)})
-`);
-        const buildCommand = `npm run build`;
-        const buildExecution = await sandbox.runCode(`
-          import subprocess
-          import sys
-          
-          result = subprocess.run(
-              ${JSON.stringify(buildCommand)},
-              shell=True,
-              cwd=${JSON.stringify(path)},
-              capture_output=True,
-              text=True
-          )
-          print(result.stdout)
-          if result.stderr:
-              print(result.stderr, file=sys.stderr)
-          print("EXIT_CODE:", result.returncode)
-          `);
-
-        const exitCode = buildExecution.error ? 1 : 0;
-        const output = buildExecution.logs?.stdout?.join("\n") || "";
-        const errorOutput = buildExecution.logs?.stderr?.join("\n") || "";
-
-        if (exitCode === 0) {
-          await sendToWs(socket, {
-            e: "build_test_success",
-            message: "Build test passed successfully",
-          });
-          return `Build test PASSED. Application builds successfully.\n\nBuild output:\n${output.slice(0, 500)}`;
-        } else {
-          await sendToWs(socket, {
-            e: "build_test_failed",
-            message: "Build test failed",
-            error: errorOutput.slice(0, 500),
-          });
-          return `Build test FAILED with exit code ${exitCode}.\n\nError:\n${errorOutput.slice(0, 1000)}`;
-        }
+        await sandbox.commands.run(
+          `cd ${APP_ROOT} && rm -rf node_modules/.vite-temp && npm install`
+        );
+        await sandbox.commands.run(`npm run build`);
+        return `Build PASSED successfully.`;
       } catch (e) {
-        console.error(e);
-        await sendToWs(socket, {
-          e: "build_test_error",
-          message: `Build test error: ${e}`,
-        });
-        return `Build test failed with error: ${e}`;
+        return `Build FAILED: ${e}`;
       }
     },
     {
-      name: "test-build",
+      name: "test_build",
       description:
-        "Run npm install (if needed) and npm run build in /home/user/react-app to validate the app compiles.",
+        "Run npm install and npm run build to validate the app compiles",
       schema: z.object({}),
     }
   );
+}
 
-export const write_mutiple_files = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
-    async (input) => {
-      const { files } = z
-        .object({
-          files: z
-            .array(
-              z.object({
-                path: z.string(),
-                data: z.string(),
-              })
-            )
-            .min(1),
-        })
-        .parse(input);
-
-      await sendToWs(socket, {
-        e: "files_creation_started",
-        message: `Creating ${files.length} files...`,
-        count: files.length,
-      });
+function createWriteMultipleFilesTool(sandbox: Sandbox, projectId: string) {
+  return tool(
+    async ({ files }) => {
       try {
-        const fileObjects = files.map((fileInfo) => {
-          let fixedContent = fileInfo.data;
-          try {
-            fixedContent = fileInfo.data
-              .replace(/\\n/g, "\n")
-              .replace(/\\t/g, "\t")
-              .replace(/\\r/g, "\r");
-          } catch {}
+        const fileObjects = files.map((f) => ({
+          path: `${APP_ROOT}/${f.path.replace(/^\/+/, "")}`,
+          content: f.content,
+        }));
 
-          const fullPath = `${APP_ROOT}/${fileInfo.path.replace(/^\/+/, "")}`;
-          return { path: fullPath, content: fixedContent };
+        for (const file of fileObjects) {
+          await sandbox.files.write(file.path, file.content);
+        }
+
+        await prisma.projectFile.createMany({
+          data: fileObjects.map((f) => ({
+            projectId,
+            path: f.path,
+            content: f.content,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })),
+          skipDuplicates: true,
         });
 
-        const writeCommand = `
-        import os
-        
-        files_to_create = ${JSON.stringify(fileObjects)}
-        
-        for file_info in files_to_create:
-            os.makedirs(os.path.dirname(file_info["path"]), exist_ok=True)
-            with open(file_info["path"], "w", encoding="utf-8") as f:
-                f.write(file_info["content"])
-        
-        print(f"Successfully created {len(files_to_create)} files")
-        `;
-        await sandbox.runCode(writeCommand);
-
-        const fileNames = files.map((f) => f.path);
-        await sendToWs(socket, {
-          e: "files_created",
-          message: `Created ${fileNames.length} files: ${fileNames.slice(0, 10).join(", ")}${fileNames.length > 10 ? "..." : ""}`,
-          files: fileNames,
-        });
-
-        return `Successfully created ${fileNames.length} files: ${fileNames.join(", ")}`;
+        const paths = files.map((f) => f.path);
+        return `Successfully created ${paths.length} files: ${paths.join(", ")}`;
       } catch (e) {
-        console.error(e);
-        await sendToWs(socket, {
-          e: "file_error",
-          message: `Failed to create multiple files: ${e}`,
-        });
-        return `Failed to create multiple files: ${e}`;
+        return `Failed to create files: ${e}`;
       }
     },
     {
-      name: "write-multiple-files",
-      description:
-        "Create many files in one shot under /home/user/react-app for efficiency.",
+      name: "write_multiple_files",
+      description: "Create multiple files at once for efficiency",
       schema: z.object({
         files: z
           .array(
             z.object({
-              path: z.string().describe("Relative, path (e.g., src/App.jsx)"),
-              data: z.string().describe("File contents"),
+              path: z.string().describe("Relative path (e.g., src/App.tsx)"),
+              content: z.string().describe("File contents"),
             })
           )
           .min(1),
       }),
     }
   );
+}
 
-export const check_missing_dependencies = (
-  sandbox: Sandbox,
-  socket: WebSocket | null,
-  _projectId: string
-) =>
-  tool(
+function createStartDevServerTool(sandbox: Sandbox) {
+  return tool(
     async () => {
       try {
-        await sendToWs(socket, {
-          e: "dependency_check_started",
-          message: "Checking for missing dependencies...",
-        });
-        const packageJsonPath = `${APP_ROOT}/package.json`;
-        await sandbox.runCode(`
-with open(${JSON.stringify(packageJsonPath)}, "r", encoding="utf-8") as f:
-    import json
-    package_data = json.load(f)
-    print(json.dumps(package_data))
-`);
+        // Check if server is already running
+        const checkOutput = await sandbox.commands.run(
+          `lsof -ti:5173 2>/dev/null || echo "not_running"`
+        );
+        if (!checkOutput.stdout.includes("not_running")) {
+          return `Dev server is already running on port 5173. Preview URL: https://5173-${sandbox.sandboxId}.e2b.app`;
+        }
 
-        await sandbox.runCode(`
-  import os
-  import subprocess
-  
-  result = subprocess.run(
-      ${JSON.stringify(`find ${APP_ROOT}/src -name '*.jsx' -o -name '*.js' -o -name '*.tsx' -o -name '*.ts'`)},
-      shell=True,
-      capture_output=True,
-      text=True
-  )
-  
-  files = [f.strip() for f in result.stdout.strip().split("\\n") if f.strip()]
-  print("\\n".join(files))
-  `);
+        const checkPackageJson = await sandbox.commands.run(
+          `cd ${APP_ROOT} && test -f package.json && echo "exists" || echo "missing"`
+        );
+        if (checkPackageJson.stdout.includes("missing")) {
+          return `Error: package.json not found in ${APP_ROOT}. Make sure you're working in the correct directory.`;
+        }
 
-        await sendToWs(socket, {
-          e: "dependency_check_complete",
-          message: "Dependency check completed",
-        });
-        return "Dependency check completed. All dependencies appear to be installed. (Full implementation needed)";
+        await sandbox.commands.run(
+          `cd ${APP_ROOT} && nohup npm run dev > /tmp/vite.log 2>&1 &`
+        );
+
+        let attempts = 0;
+        let serverRunning = false;
+        while (attempts < 10 && !serverRunning) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          const verifyOutput = await sandbox.commands.run(
+            `lsof -ti:5173 2>/dev/null || echo "not_running"`
+          );
+          if (!verifyOutput.stdout.includes("not_running")) {
+            serverRunning = true;
+            break;
+          }
+          attempts++;
+        }
+
+        if (serverRunning) {
+          return `Dev server started successfully on port 5173.\n\nPreview URL: https://5173-${sandbox.sandboxId}.e2b.app\n\nThe dev server is running in the background. You can access your app at the preview URL above.`;
+        } else {
+          const logs = await sandbox.commands.run(
+            `tail -20 /tmp/vite.log 2>/dev/null || echo "No logs available"`
+          );
+          return `Dev server may not have started properly. Check the logs:\n${logs.stdout}\n\nYou can try running 'cd ${APP_ROOT} && npm run dev' manually in the sandbox.`;
+        }
       } catch (e) {
-        console.error(e);
-        await sendToWs(socket, {
-          e: "dependency_check_error",
-          message: `Dependency check failed: ${e}`,
-        });
-        return `Dependency check failed: ${e}`;
+        return `Failed to start dev server: ${e}. You can try running 'cd ${APP_ROOT} && npm run dev' manually in the sandbox.`;
       }
     },
     {
-      name: "check-missing-dependencies",
+      name: "start_dev_server",
       description:
-        "Scan source imports vs package.json and suggest npm install commands for missing dependencies.",
+        "Start the Vite dev server on port 5173 in the background. This makes the app accessible via the preview URL. The React app should already be set up in /home/user/react-app - do not create a new app.",
       schema: z.object({}),
     }
   );
+}
 
+function createSearchTool() {
+  return tool(
+    async ({ query, type }) => {
+      const options: any = {
+        useAutoPrompts: true,
+        numResuls: 3,
+        type: "neural",
+      };
+
+      if (type === "general") {
+        options.contents = {
+          text: true,
+        };
+      }
+
+      const response = await exaClient.search(query, options);
+      const formattedResults = response.results.map((result: any) => {
+        if (type === "image") {
+          return {
+            title: result.title,
+            image: result.image,
+            url: result.url,
+          };
+        } else {
+          const summary = result.summary;
+          return {
+            title: result.title,
+            url: result.url,
+            text: summary,
+          };
+        }
+      });
+
+      return `Found ${formattedResults.length} results:\n${formattedResults.map((result) => `${result?.title}\n${result?.url}\n${result?.image}`).join("\n")}`;
+    },
+    {
+      name: "search",
+      description: "Search the web for information",
+      schema: z.object({
+        query: z.string().describe("The query to search for"),
+        type: z.enum(["general", "image"]).default("general"),
+      }),
+    }
+  );
+}
+
+export async function closeSandbox(projectId: string) {
+  const sandbox = await createSandbox(projectId);
+  await sandbox.kill();
+}
