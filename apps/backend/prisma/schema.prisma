@@ -5,12 +5,12 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -26,10 +26,13 @@ model Project {
   id            String           @id @default(uuid())
   title         String
   initialPrompt String
-  userId        String           @unique
+  userId        String
   user          User             @relation(fields: [userId], references: [id])
+  sandboxId     String?
+  sandboxUrl    String?
   contexts      ProjectContext[]
   conversations Conversation[]
+  files         ProjectFile[]
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 }
@@ -85,4 +88,18 @@ enum ToolCall {
   TEST_BUILD
   WRITE_MULTIPLE_FILES
   CHECK_MISSING_DEPENDENCIES
+  ADD_DEPENDENCY
+}
+
+model ProjectFile {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  path      String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, path])
+  @@index([projectId])
 }
