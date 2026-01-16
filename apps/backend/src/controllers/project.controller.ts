@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { prisma } from "../config/prisma-client.js";
+import { prisma } from "../lib/prisma.js";
 
 export const createProject = async (req: Request, res: Response) => {
   try {
@@ -71,7 +71,10 @@ export const getProjectById = async (req: Request, res: Response) => {
   }
 };
 
-export const createProjectConversationChatMessage = async (req: Request, res: Response) => {
+export const createProjectConversationChatMessage = async (
+  req: Request,
+  res: Response
+) => {
   try {
     const { projectId } = req.params;
     const { contents, type, toolCall, from } = req.body;
